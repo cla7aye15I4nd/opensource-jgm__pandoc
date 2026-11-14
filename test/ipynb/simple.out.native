@@ -62,7 +62,7 @@ Pandoc
       , Div
           ( ""
           , [ "output" , "execute_result" ]
-          , [ ( "execution_count" , "2" ) ]
+          , [ ( "execution_count" , "Just 2" ) ]
           )
           [ RawBlock
               (Format "html")

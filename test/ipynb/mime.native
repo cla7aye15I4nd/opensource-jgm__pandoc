@@ -102,7 +102,7 @@
     , Div
         ( ""
         , [ "output" , "execute_result" ]
-        , [ ( "execution_count" , "6" ) ]
+        , [ ( "execution_count" , "Just 6" ) ]
         )
         [ RawBlock (Format "html") "\\[E = mc^2\\]"
         , RawBlock (Format "latex") "\\[E = mc^2\\]"
