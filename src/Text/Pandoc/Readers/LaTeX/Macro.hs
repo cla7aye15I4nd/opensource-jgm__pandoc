@@ -1,3 +1,4 @@
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
 module Text.Pandoc.Readers.LaTeX.Macro
   ( macroDef
@@ -12,7 +13,7 @@ import Text.Pandoc.Shared (safeRead)
 import Text.Pandoc.Parsing hiding (blankline, mathDisplay, mathInline,
                             optional, space, spaces, withRaw, (<|>))
 import Control.Applicative ((<|>), optional)
-import Control.Monad (guard)
+import Control.Monad (guard, mzero)
 import Data.Char (chr, isLetter, ord)
 import qualified Data.Map as M
 import qualified Data.Set as Set
@@ -32,7 +33,8 @@ macroDef constructor = do
       guardDisabled Ext_latex_macros)
      <|> return mempty
   where commandDef = do
-          nameMacroPairs <- newcommand <|> newDocumentCommand <|>
+          nameMacroPairs <- characterDef <|> newcommand <|>
+            newDocumentCommand <|>
             newDocumentEnvironment <|> commandCopy <|> environmentCopy <|>
             checkGlobal (letmacro <|> edefmacro <|> defmacro <|> newif)
           guardDisabled Ext_latex_macros <|>
@@ -95,13 +97,45 @@ lookupMacro name = do
      Just m -> return m
      Nothing -> fail "Macro not found"
 
+-- | A definition whose name is a character the author has made active,
+-- as in @\\def~{...}@ or @\\gdef:{...}@.  Pandoc does not track
+-- category codes, so such a definition is read and ignored.
+characterDef :: PandocMonad m => LP m [(Text, Macro)]
+characterDef = try $ do
+  optional (controlSeq "global")
+  Tok _ (CtrlSeq cmd) _ <- anyControlSeq
+  withVerbatimMode $
+    -- the body must be braced (or, for \let, a control sequence), so
+    -- that text such as "\newcommand." is not taken for a definition
+    if | cmd `elem` ["def", "gdef", "edef", "xdef"] -> do
+           _ <- activeChar
+           _ <- many (argspecArg <|> argspecPattern)
+           [] <$ braced
+       | cmd == "let" -> do
+           _ <- activeChar
+           optional (symbol '=')
+           sp
+           [] <$ anyControlSeq
+       | cmd `elem` ["newcommand", "renewcommand", "providecommand"] -> do
+           optional (symbol '*')
+           sp
+           _ <- activeChar <|>
+                  (symbol '{' *> spaces *> activeChar <* spaces <* symbol '}')
+           optional (try bracketedNum)
+           optional (try bracketedToks)
+           [] <$ braced
+       | otherwise -> mzero
+ where
+  activeChar = satisfyTok $ \(Tok _ toktype t) ->
+    toktype == Symbol && t `notElem` ["{", "}", "\\"]
+
 letmacro :: PandocMonad m => LP m [(Text, Macro)]
 letmacro = do
   controlSeq "let"
   withVerbatimMode $ do
     Tok _ (CtrlSeq name) _ <- anyControlSeq
     optional $ symbol '='
-    spaces
+    sp
     -- we first parse in verbatim mode, and then expand macros,
     -- because we don't want \let\foo\bar to turn into
     -- \let\foo hello if we have previously \def\bar{hello}
@@ -203,14 +237,12 @@ newcommand = do
   withVerbatimMode $ do
     Tok _ (CtrlSeq name) txt <- do
       optional (symbol '*')
-      anyControlSeq <|>
-        (symbol '{' *> spaces *> anyControlSeq <* spaces <* symbol '}')
-    spaces
+      sp
+      anyControlSeq <|> bracedName
     numargs <- option 0 $ try bracketedNum
     let argspecs = map ArgNum [1..numargs]
-    spaces
     optarg <- option Nothing $ Just <$> try bracketedToks
-    spaces
+    sp
     contents' <- bracedOrToken
     let contents =
          case mtype of
@@ -230,6 +262,14 @@ newcommand = do
           _ -> [] <$ report (MacroAlreadyDefined txt pos))
       <|> pure [(name, macro)]
 
+-- | The name in @\\newcommand{\\foo}@.  LaTeX strips the braces
+-- around the name more than once, so @\\newcommand{{\\foo}}@ also
+-- defines @\\foo@.
+bracedName :: PandocMonad m => LP m Tok
+bracedName =
+  symbol '{' *> spaces *> (anyControlSeq <|> bracedName)
+    <* spaces <* symbol '}'
+
 -- | Parses a definition of the form
 -- @\NewDocumentCommand\cmd{argspec}{body}@ (and the Renew, Provide,
 -- Declare, and Expandable variants), with xparse (LaTeX3) argument
@@ -247,12 +287,12 @@ newDocumentCommand = try $ do
     <|> controlSeq "DeclareExpandableDocumentCommand"
   withVerbatimMode $ do
     Tok _ (CtrlSeq name) txt <- do
-      spaces
+      sp
       anyControlSeq <|>
         (symbol '{' *> spaces *> anyControlSeq <* spaces <* symbol '}')
-    spaces
+    sp
     (argspecs, _) <- xparseArgSpecs False
-    spaces
+    sp
     contents <- bracedOrToken
     let macro = Macro GroupScope ExpandWhenUsed argspecs Nothing contents
     (do lookupMacro name
@@ -280,12 +320,11 @@ newDocumentEnvironment = try $ do
     <|> controlSeq "ProvideDocumentEnvironment"
     <|> controlSeq "DeclareDocumentEnvironment"
   withVerbatimMode $ do
-    spaces
     name <- T.strip . untokenize <$> braced
-    spaces
+    sp
     (argspecs, usesBody) <- xparseArgSpecs True
-    startcontents <- spaces >> bracedOrToken
-    endcontents <- spaces >> bracedOrToken
+    startcontents <- sp >> bracedOrToken
+    endcontents <- sp >> bracedOrToken
     -- we need the environment to be in a group so macros defined
     -- inside behave correctly:
     let bg = Tok pos (CtrlSeq "bgroup") "\\bgroup "
@@ -331,10 +370,10 @@ commandCopy = try $ do
     <|> controlSeq "DeclareCommandCopy"
   withVerbatimMode $ do
     Tok _ (CtrlSeq name) txt <- do
-      spaces
+      sp
       anyControlSeq <|>
         (symbol '{' *> spaces *> anyControlSeq <* spaces <* symbol '}')
-    spaces
+    sp
     target@(Tok _ (CtrlSeq targetName) _) <- anyControlSeq
     result <- (do m <- lookupMacro targetName
                   pure [(name, m)])
@@ -357,9 +396,7 @@ environmentCopy = try $ do
     <|> controlSeq "RenewEnvironmentCopy"
     <|> controlSeq "DeclareEnvironmentCopy"
   withVerbatimMode $ do
-    spaces
     name <- untokenize <$> braced
-    spaces
     target <- untokenize <$> braced
     let copyOne to from fallback =
           (do m <- lookupMacro from
@@ -473,15 +510,12 @@ newenvironment = do
                              controlSeq "provideenvironment"
   withVerbatimMode $ do
     optional $ symbol '*'
-    spaces
     name <- untokenize <$> braced
-    spaces
     numargs <- option 0 $ try bracketedNum
-    spaces
     optarg <- option Nothing $ Just <$> try bracketedToks
     let argspecs = map (\i -> ArgNum i) [1..numargs]
-    startcontents <- spaces >> bracedOrToken
-    endcontents <- spaces >> bracedOrToken
+    startcontents <- sp >> bracedOrToken
+    endcontents <- sp >> bracedOrToken
     -- we need the environment to be in a group so macros defined
     -- inside behave correctly:
     let bg = Tok pos (CtrlSeq "bgroup") "\\bgroup "

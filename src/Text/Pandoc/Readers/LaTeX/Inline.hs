@@ -53,6 +53,7 @@ rawInlineOr name' fallback = do
 
 dolabel :: PandocMonad m => LP m Inlines
 dolabel = do
+  skipopts -- cleveref's \label[type]{key}
   v <- braced
   let refstr = untokenize v
   updateState $ \st ->
@@ -108,7 +109,7 @@ domintinline = do
 
 doinlinecode :: PandocMonad m => [Text] -> LP m Inlines
 doinlinecode classes = do
-  Tok _ Symbol t <- anySymbol
+  Tok _ Symbol t <- sp *> anySymbol
   marker <- case T.uncons t of
               Just (c, ts) | T.null ts -> return c
               _            -> mzero
