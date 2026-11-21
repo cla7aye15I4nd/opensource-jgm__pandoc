@@ -35,6 +35,9 @@ tableEnvironments block inline =
   , ("tabular*", env "tabular*" $ simpTable block inline "tabular*" True)
   , ("tabularx", env "tabularx" $ simpTable block inline "tabularx" True)
   , ("tabular", env "tabular"  $ simpTable block inline "tabular" False)
+  , ("xltabular", env "xltabular" $
+          resetCaption *>
+            simpTable block inline "xltabular" True >>= addTableCaption)
   , ("supertabular", env "supertabular" $ simpTable block inline "supertabular" False)
   , ("supertabular*", env "supertabular*" $ simpTable block inline "supertabular*" False)
   ]
@@ -147,6 +150,9 @@ parseTableRow block inline envname prefsufs = do
   let canContainAmp (Tok _ (CtrlSeq "begin") _) = True
       canContainAmp (Tok _ (CtrlSeq "verb") _)  = True
       canContainAmp (Tok _ (CtrlSeq "Verb") _)  = True
+      canContainAmp (Tok _ (CtrlSeq "url") _)  = True
+      canContainAmp (Tok _ (CtrlSeq "href") _)  = True
+      canContainAmp (Tok _ (CtrlSeq "nolinkurl") _)  = True
       canContainAmp _       = False
   -- add prefixes and suffixes in token stream:
   let celltoks (pref, suff) = do
